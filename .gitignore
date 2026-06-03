@@ -9,7 +9,7 @@
 *.runs/
 *.sim/
 *.gen/
-*.srcs/sources_1/bd/*/ip/
+*.srcs/
 .Xil/
 
 # Vivado journal & log files

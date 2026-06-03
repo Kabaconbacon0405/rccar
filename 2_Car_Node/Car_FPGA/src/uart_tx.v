@@ -25,7 +25,7 @@ module uart_tx #(
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             state <= IDLE;
-            tx_pin <= 1'b1; // UART idles HIGH
+            tx_pin <= 1'b1; 
             tx_busy <= 0;
             timer <= 0;
             bit_index <= 0;
@@ -36,7 +36,7 @@ module uart_tx #(
                     tx_pin <= 1'b1;
                     tx_busy <= 0;
                     timer <= 0;
-                    bit_index <= 0;
+                    bit_index <= 0; 
                     if (tx_start) begin
                         shift_reg <= tx_data;
                         tx_busy <= 1'b1;
@@ -45,7 +45,7 @@ module uart_tx #(
                 end
                 
                 START: begin
-                    tx_pin <= 1'b0; // Start bit pulls the line LOW
+                    tx_pin <= 1'b0; 
                     if (timer == BIT_TIMER_MAX - 1) begin
                         timer <= 0;
                         state <= DATA;
@@ -55,7 +55,7 @@ module uart_tx #(
                 end
                 
                 DATA: begin
-                    tx_pin <= shift_reg[bit_index]; // Send LSB first
+                    tx_pin <= shift_reg[bit_index]; 
                     if (timer == BIT_TIMER_MAX - 1) begin
                         timer <= 0;
                         if (bit_index == 3'd7) state <= STOP;
@@ -66,7 +66,7 @@ module uart_tx #(
                 end
                 
                 STOP: begin
-                    tx_pin <= 1'b1; // Stop bit pulls line HIGH
+                    tx_pin <= 1'b1; 
                     if (timer == BIT_TIMER_MAX - 1) begin
                         timer <= 0;
                         state <= IDLE;

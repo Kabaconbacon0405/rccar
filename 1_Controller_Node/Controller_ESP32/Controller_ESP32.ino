@@ -3,97 +3,120 @@
 #include <esp_wifi.h>
 
 // --- 1. HARDWARE PINS ---
-const int JOYSTICK_X_PIN = 32;
-const int JOYSTICK_Y_PIN = 33;
-const int JOYSTICK_SW_PIN = 25; // Connect joystick 'SW' to this pin
+const int JOY_X_PIN = 32; // Analog Joystick X-axis
+const int JOY_Y_PIN = 33; // Analog Joystick Y-axis
+const int HORN_PIN  = 25; // Joystick Digital Push Button
 
-// UART2 default pins: RX = 16 (From FPGA), TX = 17 (To FPGA)
+const int UART2_RX_PIN = 26; // <- Controller FPGA tx_out (config byte)
+const int UART2_TX_PIN = 27; // -> Controller FPGA rx_in (telemetry)
 
-// --- 2. NETWORK DATA STRUCTURES ---
-// What we send TO the car
-typedef struct DrivePacket {
+// --- 2. NETWORK DATA STRUCTURES (Byte-identical to Car ESP32) ---
+// The __attribute__((packed)) forces the ESP32 compiler to lock the size to exact bytes!
+typedef struct __attribute__((packed)) DrivePacket {
   int16_t x;
   int16_t y;
-  uint8_t config; // The 8-bit dashboard switch byte from Controller FPGA
-  uint8_t horn;   // 1 = Honk, 0 = Silent
+  uint8_t config;     
+  uint8_t horn;
 } DrivePacket;
 
-// What we receive FROM the car
-typedef struct TelemetryPacket {
-  uint8_t real_speed; // 0-100%
-  uint8_t status;     // Battery or error codes
+typedef struct __attribute__((packed)) TelemetryPacket {
+  uint8_t real_speed; 
+  uint8_t status;
 } TelemetryPacket;
 
-DrivePacket drive_cmd;
+DrivePacket     drive_cmd;
 TelemetryPacket car_telem;
 
-// TARGET MAC ADDRESS: The Car ESP32 (1C:C3:AB:B9:8A:A4)
-uint8_t carAddress[] = {0x1C, 0xC3, 0xAB, 0xB9, 0x8A, 0xA4}; 
+// TARGET MAC ADDRESS: Your Physical Car ESP32
+uint8_t carAddress[] = {0x70, 0x4B, 0xCA, 0x57, 0xD2, 0xA4}; 
 esp_now_peer_info_t peerInfo;
 
-// --- 3. CALLBACKS ---
-void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-  // Silent success
-}
-
+// =============================================================================
+//  REVERSE PATH CALLBACK (Car -> Controller)
+// =============================================================================
 void OnDataRecv(const esp_now_recv_info_t *esp_now_info, const uint8_t *incomingData, int len) {
-  if (len == sizeof(TelemetryPacket)) {
-    memcpy(&car_telem, incomingData, sizeof(car_telem));
-    
-    // Forward telemetry to the Controller FPGA's 7-segment display
-    Serial2.write(0xCF); // Sync Byte
-    Serial2.write(car_telem.real_speed);
-    Serial2.write(car_telem.status);
-  }
+  if (len != sizeof(TelemetryPacket)) return;
+  
+  memcpy(&car_telem, incomingData, sizeof(car_telem));
+
+  // Forward the telemetry data straight to the Controller FPGA over UART
+  Serial2.write(0x43);                 // 'C' ASCII character or custom Sync
+  Serial2.write(0xCF);                 // Sync Byte (0xCF)
+  Serial2.write(car_telem.real_speed); // Speed Byte
+  Serial2.write(car_telem.status);     // Status Byte
 }
 
-// --- 4. SETUP ---
+// =============================================================================
+//  SETUP
+// =============================================================================
 void setup() {
-  Serial.begin(115200); 
-  Serial2.begin(9600, SERIAL_8N1, 16, 17); 
+  Serial.begin(115200);
+  Serial2.begin(9600, SERIAL_8N1, UART2_RX_PIN, UART2_TX_PIN);
 
-  // Initialize the Joystick Button with an internal Pull-Up resistor
-  pinMode(JOYSTICK_SW_PIN, INPUT_PULLUP);
+  pinMode(HORN_PIN, INPUT_PULLUP);
 
   WiFi.mode(WIFI_STA);
+  WiFi.disconnect();                    // <-- Kills background router searching
+
   esp_wifi_set_promiscuous(true);
   esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
   esp_wifi_set_promiscuous(false);
 
-  if (esp_now_init() != ESP_OK) return;
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);   // Prevent thermal brownouts
 
-  // FIX: Cast the callback to bypass the strict v3.0 type conversion error
-  esp_now_register_send_cb((esp_now_send_cb_t)OnDataSent);
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("ESP-NOW Init Failed");
+    return;
+  }
   esp_now_register_recv_cb(OnDataRecv);
 
-  // Register the Car as a peer
   memcpy(peerInfo.peer_addr, carAddress, 6);
-  peerInfo.channel = 1;  
+  peerInfo.channel = 1;
   peerInfo.encrypt = false;
-  if (esp_now_add_peer(&peerInfo) != ESP_OK) return;
+  esp_now_add_peer(&peerInfo);
 
-  drive_cmd.config = 0x00; 
-  drive_cmd.horn = 0;
+  Serial.println("CONTROLLER ONLINE. Operational on Channel 1...");
 }
 
-// --- 5. MAIN LOOP ---
+// =============================================================================
+//  MAIN LOOP: Parses Controller FPGA Commands & Transmits over Wi-Fi
+// =============================================================================
+enum FpgaState : uint8_t { WAIT_SYNC = 0, WAIT_CONFIG };
+
 void loop() {
-  drive_cmd.x = analogRead(JOYSTICK_X_PIN);
-  drive_cmd.y = analogRead(JOYSTICK_Y_PIN);
+  static FpgaState tx_state = WAIT_SYNC;
+  
+  // Non-blocking UART parser for incoming Controller FPGA configuration frames
+  while (Serial2.available() > 0) {
+    uint8_t incoming = (uint8_t) Serial2.read();
 
-  // Read the button: INPUT_PULLUP means LOW when pressed, HIGH when released.
-  // We invert it so 1 = Pressed, 0 = Released.
-  drive_cmd.horn = (digitalRead(JOYSTICK_SW_PIN) == LOW) ? 1 : 0;
+    switch (tx_state) {
+      case WAIT_SYNC:
+        if (incoming == 0xFC) { // Forward Path Sync Byte from FPGA
+          tx_state = WAIT_CONFIG;
+        }
+        break;
 
-  // Read the Controller FPGA config byte over UART
-  while (Serial2.available() >= 2) {
-    if (Serial2.read() == 0xFC) {
-      drive_cmd.config = Serial2.read();
+      case WAIT_CONFIG:
+        // 1. Capture the verified config byte from the FPGA
+        drive_cmd.config = incoming; 
+        
+        // 2. Read local analog inputs from the joystick
+        drive_cmd.x = analogRead(JOY_X_PIN);
+        drive_cmd.y = analogRead(JOY_Y_PIN);
+        
+        // 3. Read horn state (Button pulls down to GND when pressed)
+        drive_cmd.horn = (digitalRead(HORN_PIN) == LOW) ? 1 : 0; 
+        
+        // 4. Blast the completed control packet over the air to the car!
+        esp_now_send(carAddress, (uint8_t *) &drive_cmd, sizeof(drive_cmd));
+        
+        tx_state = WAIT_SYNC; // Re-arm parser for the next frame
+        break;
+
+      default:
+        tx_state = WAIT_SYNC;
+        break;
     }
   }
-
-  // Blast the packet to the Car
-  esp_now_send(carAddress, (uint8_t *) &drive_cmd, sizeof(drive_cmd));
-
-  delay(20); // ~50Hz transmission rate
 }

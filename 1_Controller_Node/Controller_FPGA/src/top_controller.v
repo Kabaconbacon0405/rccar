@@ -1,129 +1,148 @@
-module top_controller #(
-    parameter BAUD_RATE = 9600,     // Add this parameter declaration
-    parameter CLOCK_FREQ = 50000000 // You usually need the clock frequency too
-)(
-    input wire clk,
-    input wire rst,          
-    input wire [7:0] sw,     // SW0 to SW7
-    input wire rx_pin,       // Telemetry data line input from ESP32
-    output wire tx_pin,      // Configuration command line output to ESP32
+module top_controller (
+    input  wire clk,
+    input  wire rst_btn,       // Hardware Reset (SW0)
     
-    // Nexys4 DDR 7-Segment Interfaces
-    output wire [7:0] an,
-    output wire [6:0] seg
+    // Physical Dashboard Inputs
+    input  wire paddle_up,     // Right Crash Detector OUT
+    input  wire paddle_down,   // Left Crash Detector OUT
+    input  wire [1:0] sw_sens, // Switches for Steering Sensitivity
+    input  wire [1:0] sw_throt,// Switches for Throttling Profile
+    
+    // UART Communication with Controller ESP32
+    input  wire rx_pin,        // From ESP32 TX2 (Pin 17) -> Receives Telemetry
+    output wire tx_out,        // To ESP32 RX2 (Pin 16) -> Sends Config Byte
+    
+    // 7-Segment Display Outputs
+    output wire [7:0] an,      // Anodes
+    output wire [6:0] seg      // Cathodes
 );
 
-    // --- 1. DEBOUNCE AND CONDITION SWITCH TRACKS ---
-    wire [7:0] clean_sw;
-    switch_debouncer #(
-        .WIDTH(8)
-    ) master_debounce (
+    // ==========================================
+    // 1. DASHBOARD LOGIC (The "ECU")
+    // ==========================================
+    wire [1:0] current_speed_mode;
+    wire [7:0] config_byte;
+    
+    // Pack the configuration bits for the ESP32
+    assign config_byte = {2'b00, sw_throt, sw_sens, current_speed_mode};
+
+    transmission_control gearbox (
         .clk(clk),
-        .rst(rst),
-        .sw_in(sw),
-        .sw_out(clean_sw)
+        .rst(rst_btn),
+        .paddle_up_raw(paddle_up),
+        .paddle_down_raw(paddle_down),
+        .speed_mode(current_speed_mode)
     );
 
-    // --- 2. TRANSMITTER ROUTINE (FPGA -> ESP32) ---
-    reg tx_start;
-    reg [7:0] tx_data;
+    // ==========================================
+    // 2. UART RECEPTION (ESP32 -> FPGA)
+    // ==========================================
+    wire [7:0] rx_data_stream;
+    wire rx_done_pulse;
+    wire [7:0] car_real_speed;
+    wire [7:0] car_status;
+
+    uart_rx my_uart_rx (
+        .clk(clk), .rst(rst_btn),
+        .rx_pin(rx_pin), 
+        .rx_data(rx_data_stream), .rx_done(rx_done_pulse)
+    );
+
+    telemetry_parser my_parser (
+        .clk(clk), .rst(rst_btn),
+        .rx_data(rx_data_stream), .rx_done(rx_done_pulse),
+        .real_speed(car_real_speed), .status_byte(car_status)
+    );
+
+    // ==========================================
+    // 3. 7-SEGMENT DISPLAY
+    // ==========================================
+    seven_seg_mux dashboard_display (
+        .clk(clk),
+        .rst(rst_btn),
+        .real_speed(car_real_speed),
+        .sw_config(config_byte), // Displays Throttling, Sensitivity, and Gear
+        .an(an),
+        .seg(seg)
+    );
+
+    // ==========================================
+    // 4. UART TRANSMISSION (FPGA -> ESP32)
+    // ==========================================
+    reg tx_start = 0;
+    reg [7:0] tx_data = 0;
     wire tx_busy;
+    
+    // Broadcast Timer: Send commands to ESP32 ~20 times a second
+    reg [22:0] broadcast_timer = 0; 
+    localparam BROADCAST_RATE = 5_000_000; // 50ms at 100MHz
+    localparam INTER_BYTE_GAP = 100_000;   // 1ms gap between bytes
+    
+    reg [2:0] tx_state = 0;
 
-    uart_tx #(
-        .CLK_FREQ(100_000_000),
-        .BAUD_RATE(9600)
-    ) controller_tx (
-        .clk(clk),
-        .rst(rst),
-        .tx_start(tx_start),
-        .tx_data(tx_data),
-        .tx_pin(tx_pin),
-        .tx_busy(tx_busy)
-    );
-
-    // Command transmission pacing loop
-    localparam WAIT_TIMER_MAX = 5_000_000; // 50ms heartbeat cycle
-    reg [22:0] wait_timer = 0;
-
-    localparam SEND_SYNC    = 3'd0;
-    localparam WAIT_SYNC_TX = 3'd1;
-    localparam SEND_CFG     = 3'd2;
-    localparam WAIT_CFG_TX  = 3'd3;
-    localparam DELAY        = 3'd4;
-    reg [2:0] tx_state = SEND_SYNC;
-
-    always @(posedge clk or posedge rst) begin
-        if (rst) begin
-            tx_state <= SEND_SYNC;
+    always @(posedge clk or posedge rst_btn) begin
+        if (rst_btn) begin
+            tx_state <= 0;
             tx_start <= 0;
-            tx_data <= 0;
-            wait_timer <= 0;
+            broadcast_timer <= 0;
         end else begin
-            tx_start <= 0; 
             case (tx_state)
-                SEND_SYNC: begin
-                    tx_data <= 8'hFC; 
-                    tx_start <= 1'b1;
-                    tx_state <= WAIT_SYNC_TX;
-                end
-                WAIT_SYNC_TX: begin
-                    if (!tx_busy && !tx_start) tx_state <= SEND_CFG;
-                end
-                SEND_CFG: begin
-                    tx_data <= clean_sw; 
-                    tx_start <= 1'b1;
-                    tx_state <= WAIT_CFG_TX;
-                end
-                WAIT_CFG_TX: begin
-                    if (!tx_busy && !tx_start) begin
-                        tx_state <= DELAY;
-                        wait_timer <= 0;
+                0: begin // Wait for the 50ms timer
+                    tx_start <= 0;
+                    if (broadcast_timer >= BROADCAST_RATE) begin
+                        broadcast_timer <= 0;
+                        tx_data <= 8'hFC; // 1st Byte: SYNC
+                        tx_state <= 1;
+                    end else begin
+                        broadcast_timer <= broadcast_timer + 1;
                     end
                 end
-                DELAY: begin
-                    if (wait_timer >= WAIT_TIMER_MAX) tx_state <= SEND_SYNC;
-                    else wait_timer <= wait_timer + 1;
+                
+                1: begin // Trigger SYNC byte
+                    tx_start <= 1;
+                    if (tx_busy) begin
+                        tx_start <= 0; 
+                        tx_state <= 2;
+                    end
                 end
-                default: tx_state <= SEND_SYNC;
+
+                2: begin // Wait for SYNC byte to finish transmitting
+                    if (!tx_busy) begin
+                        broadcast_timer <= 0; // Reset timer for the breather gap
+                        tx_state <= 3;
+                    end
+                end
+
+                3: begin // THE 1-MILLISECOND BREATHER GAP
+                    if (broadcast_timer >= INTER_BYTE_GAP) begin
+                        tx_data <= config_byte; // Load 2nd Byte: DASHBOARD CONFIG
+                        tx_state <= 4;
+                    end else begin
+                        broadcast_timer <= broadcast_timer + 1;
+                    end
+                end
+
+                4: begin // Trigger CONFIG byte
+                    tx_start <= 1;
+                    if (tx_busy) begin
+                        tx_start <= 0;
+                        tx_state <= 5;
+                    end
+                end
+
+                5: begin // Wait for CONFIG byte to finish
+                    if (!tx_busy) begin
+                        tx_state <= 0; // Done! Return to idle timer.
+                    end
+                end
             endcase
         end
     end
 
-    // --- 3. RECEIVER ROUTINE (ESP32 -> FPGA) ---
-    wire [7:0] uart_rx_data;
-    wire uart_rx_done;
-
-    uart_rx #(
-        .CLK_FREQ(100_000_000),
-        .BAUD_RATE(9600)
-    ) controller_rx (
-        .clk(clk),
-        .rst(rst),
-        .rx_pin(rx_pin),
-        .rx_data(uart_rx_data),
-        .rx_done(uart_rx_done)
-    );
-
-    wire [7:0] live_speed;
-    wire [7:0] live_status;
-
-    telemetry_parser parser_inst (
-        .clk(clk),
-        .rst(rst),
-        .rx_data(uart_rx_data),
-        .rx_done(uart_rx_done),
-        .real_speed(live_speed),
-        .status_byte(live_status)
-    );
-
-    // --- 4. HARDWARE DISPATCH MONITOR ---
-    seven_seg_mux dashboard_display (
-        .clk(clk),
-        .rst(rst),
-        .real_speed(live_speed),
-        .sw_config(clean_sw),
-        .an(an),
-        .seg(seg)
+    uart_tx my_uart_tx (
+        .clk(clk), .rst(rst_btn),
+        .tx_start(tx_start), .tx_data(tx_data),
+        .tx_pin(tx_out), .tx_busy(tx_busy)
     );
 
 endmodule
