@@ -15,7 +15,7 @@ module top_car (
     output wire in3,
     output wire in4,
     
-    // The Horn Pin
+    // The Horn Pin (direct-drive speaker on Pmod JC Pin 1 / K1 — no transistor)
     output wire horn_pin
 );
 
@@ -188,8 +188,19 @@ module top_car (
         end
     end
 
-    // --- 7. PHYSICAL HARDWARE ROUTING ---
-    assign horn_pin = horn_signal;
+    // --- 7. HORN PWM BEEP GENERATOR (Lab 7 direct-drive) ---
+    // car_horn produces a fixed 2.4 kHz square wave while horn_active is high,
+    // and forces the pin to 0 when the horn bit (command_byte[3], decoded by
+    // car_fsm as horn_signal) is low so the speaker never floats with a DC
+    // bias / hum. Output now drives the speaker directly from Pmod JC Pin 1
+    // (K1) — the external breadboard transistor circuit is no longer used.
+    car_horn my_horn (
+        .clk(clk),
+        .horn_active(horn_signal),
+        .horn_pwm(horn_pin)
+    );
+
+    // --- 8. PHYSICAL HARDWARE ROUTING ---
 
     // Route the exact same PWM power to both L298N channels
     assign ena = final_pwm;

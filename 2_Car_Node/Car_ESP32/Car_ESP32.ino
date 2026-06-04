@@ -2,6 +2,8 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <ESP32Servo.h>
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
 
 // --- 1. HARDWARE PINS & CALIBRATION ---
 const int SERVO_PIN       = 18;
@@ -61,6 +63,7 @@ void OnDataRecv(const esp_now_recv_info_t *esp_now_info, const uint8_t *incoming
 //  SETUP
 // =============================================================================
 void setup() {
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
   Serial.begin(115200);
   Serial2.begin(9600, SERIAL_8N1, UART2_RX_PIN, UART2_TX_PIN);
 
@@ -163,7 +166,9 @@ void loop() {
 
   while (Serial2.available() > 0) {
     uint8_t incoming = (uint8_t) Serial2.read();
-
+  // Temporarily print every raw byte coming from the FPGA to see if speed is changing
+  Serial.print("Raw FPGA Byte: "); Serial.println(incoming, HEX); 
+  // ... rest of state machine
     switch (rx_state) {
       case WAIT_SYNC:
         if (incoming == 0xCF) {            

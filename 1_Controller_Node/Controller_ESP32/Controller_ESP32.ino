@@ -36,12 +36,12 @@ esp_now_peer_info_t peerInfo;
 // =============================================================================
 void OnDataRecv(const esp_now_recv_info_t *esp_now_info, const uint8_t *incomingData, int len) {
   if (len != sizeof(TelemetryPacket)) return;
-  
   memcpy(&car_telem, incomingData, sizeof(car_telem));
 
-  // Forward the telemetry data straight to the Controller FPGA over UART
-  Serial2.write(0x43);                 // 'C' ASCII character or custom Sync
-  Serial2.write(0xCF);                 // Sync Byte (0xCF)
+  // ADD THIS PRINT LINE:
+  Serial.println(car_telem.real_speed); 
+
+  Serial2.write(0xCF);                 // Sync Byte 
   Serial2.write(car_telem.real_speed); // Speed Byte
   Serial2.write(car_telem.status);     // Status Byte
 }
@@ -98,20 +98,20 @@ void loop() {
         break;
 
       case WAIT_CONFIG:
-        // 1. Capture the verified config byte from the FPGA
         drive_cmd.config = incoming; 
-        
-        // 2. Read local analog inputs from the joystick
         drive_cmd.x = analogRead(JOY_X_PIN);
         drive_cmd.y = analogRead(JOY_Y_PIN);
-        
-        // 3. Read horn state (Button pulls down to GND when pressed)
         drive_cmd.horn = (digitalRead(HORN_PIN) == LOW) ? 1 : 0; 
         
-        // 4. Blast the completed control packet over the air to the car!
+        Serial.print("JOY_X (Steer): "); Serial.print(drive_cmd.x);
+        Serial.print(" \t| JOY_Y (Throttle): "); Serial.println(drive_cmd.y);
+        
         esp_now_send(carAddress, (uint8_t *) &drive_cmd, sizeof(drive_cmd));
         
-        tx_state = WAIT_SYNC; // Re-arm parser for the next frame
+        // ADD THIS PRINT LINE:
+        Serial.println("Packet Sent to Car!"); 
+        
+        tx_state = WAIT_SYNC; 
         break;
 
       default:

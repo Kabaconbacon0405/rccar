@@ -96,6 +96,15 @@
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
+      <File Path="$PSRCDIR/sources_1/imports/src/car_horn.v">
+        <FileInfo>
+          <Attr Name="ImportPath" Val="$PPRDIR/../src/car_horn.v"/>
+          <Attr Name="ImportTime" Val="1780478951"/>
+          <Attr Name="UsedIn" Val="synthesis"/>
+          <Attr Name="UsedIn" Val="implementation"/>
+          <Attr Name="UsedIn" Val="simulation"/>
+        </FileInfo>
+      </File>
       <File Path="$PPRDIR/../src/pwm_generator.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>

@@ -21,9 +21,12 @@ set_property -dict { PACKAGE_PIN G17   IOSTANDARD LVCMOS33 } [get_ports { rx_pin
 set_property -dict { PACKAGE_PIN D17   IOSTANDARD LVCMOS33 } [get_ports { enb }];      # L298N ENB (Right Motor Speed)
 set_property -dict { PACKAGE_PIN E17   IOSTANDARD LVCMOS33 } [get_ports { in3 }];      # L298N IN3 (Right Motor Dir)
 set_property -dict { PACKAGE_PIN F18   IOSTANDARD LVCMOS33 } [get_ports { in4 }];      # L298N IN4 (Right Motor Dir)
-set_property -dict { PACKAGE_PIN G18   IOSTANDARD LVCMOS33 } [get_ports { horn_pin }]; # Active Buzzer
+# (JA Pin 10 / G18 is now FREE — horn moved to Pmod JC below)
 
 ## Pmod Header JB (Telemetry Hub)
 # Top Row
 set_property -dict { PACKAGE_PIN D14   IOSTANDARD LVCMOS33 } [get_ports { tx_pin }];     # FPGA TX -> ESP32 RX
 set_property -dict { PACKAGE_PIN F16   IOSTANDARD LVCMOS33 } [get_ports { sensor_pin }]; # KeyesEye Sensor OUT
+
+## Pmod Header JC (Direct-Drive Speaker — Lab 7 method, no transistor)
+set_property -dict { PACKAGE_PIN K1    IOSTANDARD LVCMOS33 } [get_ports { horn_pin }];   # JC Pin 1 -> Speaker (+)
