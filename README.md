@@ -5,15 +5,16 @@ A hardware–software co-design project implementing a **Drive-by-Wire**, **FR (
 ## Architecture
 
 ```
-  Switches + Paddles      2x Joystick + Button                 Steering Servo   L298N + Motors
-        │                        │                                    ▲                ▲
-        ▼                        ▼                                    │                │
- ┌──────────────┐  UART   ┌──────────────┐   ESP-NOW    ┌───────────┐ │   ┌───────────┐
- │ Controller   │◄═══════►│ Controller   │═════════════►│    Car    │─┘   │    Car    │
- │   FPGA       │  9600   │   ESP32      │◄═════════════│   ESP32   │═══► │   FPGA    │
- │ (Dashboard)  │         │ (Net Hub)    │  telemetry   │(Kinematics)│9600 │  (ECU)    │
- └──────────────┘         └──────────────┘              └───────────┘     └───────────┘
-   7-seg speedo                                                    IR wheel encoder ┘
+   Switches + Paddles       2× Joysticks + Button         Steering Servo            L298N + Motors
+          │                         │                           │                         │
+          ▼                         ▼                           ▼                         ▼
+ ┌──────────────┐        ┌──────────────┐        ┌──────────────┐        ┌──────────────┐
+ │  Controller  │  UART  │  Controller  │ ESP-NOW│     Car      │  UART  │     Car      │
+ │     FPGA     │◄══════►│    ESP32     │◄══════►│    ESP32     │◄══════►│     FPGA     │
+ │ (Dashboard)  │  9600  │  (Net Hub)   │  Ch.1  │ (Kinematics) │  9600  │    (ECU)     │
+ └──────────────┘        └──────────────┘        └──────────────┘        └──────────────┘
+         │                                                                        │
+         └─ 7-seg speedometer                                  IR wheel encoder ──┘
 ```
 
 | Node | Platform | Role |
@@ -63,6 +64,45 @@ struct DrivePacket     { int16_t x; int16_t y; uint8_t config; uint8_t horn; }; 
 struct TelemetryPacket { uint8_t real_speed; uint8_t status; };                   // packed
 // command byte to Car FPGA = [horn:3][direction:2][throttling:1:0]
 ```
+
+### Protocol descriptions
+
+Data moves in two directions — a **forward pipeline** that carries driver intent to the
+motors, and a **reverse pipeline** that carries measured wheel speed back to the dashboard.
+Every link is framed with a unique **sync byte** so a receiver can always re-align to the
+start of a packet after noise or a reboot, and all UART hops run **9600 8N1**.
+
+1. **Controller FPGA → Controller ESP32 (config, UART `0xFC`).**
+   The dashboard FPGA packs the gear (from the paddle-shift FSM), sensitivity and throttling
+   switches into one config byte and streams `[0xFC][config]` every ~50 ms. A ~1 ms idle
+   "breather" gap separates the two bytes so the ESP32's byte-at-a-time parser never glues
+   them together. The ESP32 hunts for `0xFC`, then takes the next byte as `config`.
+
+2. **Controller ESP32 → Car ESP32 (drive, ESP-NOW).**
+   The hub samples both joysticks + the horn button, attaches the latest `config`, and sends
+   a `DrivePacket` over **ESP-NOW on Wi-Fi Channel 1** (connectionless, ~1 ms latency, no
+   router). Both ESP32s call `WiFi.disconnect()` and lock channel 1 so the radios can't drift
+   off hunting for access points. ESP-NOW already CRC-checks frames, so no sync byte is needed.
+
+3. **Car ESP32 → Car FPGA (drive, UART `0xAA`…`0x55`).**
+   The Car ESP32 does the kinematics (servo angle, speed, direction) and emits a 4-byte frame
+   `[0xAA][speed][command][0x55]`. It is **bracketed** by a head (`0xAA`) and tail (`0x55`)
+   byte: the Car FPGA's `car_fsm` only commits the values to the motors if the `0x55` tail
+   arrives where expected, rejecting any truncated/corrupt packet.
+
+4. **Car FPGA → Car ESP32 (telemetry, UART `0xCF`).**
+   The `speed_encoder` counts IR pulses over a 100 ms window; the FPGA then streams
+   `[0xCF][real_speed][status]` (again with 1 ms inter-byte gaps). The Car ESP32 parses it
+   non-blockingly and re-packs it into a `TelemetryPacket`.
+
+5. **Car ESP32 → Controller ESP32 (telemetry, ESP-NOW)** then
+   **Controller ESP32 → Controller FPGA (telemetry, UART `0xCF`).**
+   The telemetry rides ESP-NOW back to the hub, which immediately re-serializes it as
+   `[0xCF][real_speed][status]`. The Controller FPGA's `telemetry_parser` recovers the speed
+   and drives the 7-segment speedometer.
+
+Sync bytes are deliberately distinct per direction so cross-talk can't be mis-framed:
+`0xFC` = config out, `0xCF` = telemetry, `0xAA`/`0x55` = drive frame head/tail.
 
 ## Feature Highlights
 
