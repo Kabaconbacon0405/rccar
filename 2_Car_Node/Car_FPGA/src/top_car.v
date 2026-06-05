@@ -16,7 +16,16 @@ module top_car (
     output wire in4,
     
     // The Horn Pin (direct-drive speaker on Pmod JC Pin 1 / K1 — no transistor)
-    output wire horn_pin
+    output wire horn_pin,
+
+    // --- TEMP DEBUG: speed-encoder bring-up LEDs ---
+    // led[0] = live raw sensor level at F16 (flickers if signal reaches the pin)
+    // led[1] = ~1.5 Hz heartbeat: proves THIS bitstream is loaded & running
+    output wire [1:0] led,
+
+    // 7-segment display: live PWM duty on the right 3 digits (e.g. 100/90/80)
+    output wire [6:0] seg,
+    output wire [7:0] an
 );
 
     // --- INTERNAL WIRES ---
@@ -188,6 +197,15 @@ module top_car (
         end
     end
 
+    // --- 6b. 7-SEGMENT PWM DISPLAY (right 3 digits show current_speed) ---
+    seven_seg_car my_display (
+        .clk(clk),
+        .rst(rst),
+        .value(current_speed),   // live PWM duty fed to pwm_generator
+        .seg(seg),
+        .an(an)
+    );
+
     // --- 7. HORN PWM BEEP GENERATOR (Lab 7 direct-drive) ---
     // car_horn produces a fixed 2.4 kHz square wave while horn_active is high,
     // and forces the pin to 0 when the horn bit (command_byte[3], decoded by
@@ -211,5 +229,12 @@ module top_car (
     assign in2 = ~direction;
     assign in3 = direction;
     assign in4 = ~direction;
+
+    // --- TEMP DEBUG: speed-encoder bring-up ---
+    reg [26:0] heartbeat = 0;
+    always @(posedge clk) heartbeat <= heartbeat + 1'b1;
+
+    assign led[0] = sensor_pin;       // raw input level at F16 (turn wheel slowly)
+    assign led[1] = heartbeat[25];    // ~1.5 Hz blink = this bitstream is alive
 
 endmodule

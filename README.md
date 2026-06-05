@@ -1,58 +1,99 @@
 # rccar — Drive-by-Wire FR RC Car
 
-A hardware-software co-design project implementing a **Drive-by-Wire**, **FR (Front-engine, Rear-wheel drive)** layout RC car using a **distributed 4-node architecture**. Designed as a foundational build for future autonomous / agentic integrations.
+A hardware–software co-design project implementing a **Drive-by-Wire**, **FR (Front-engine, Rear-wheel drive)** layout RC car using a **distributed 4-node architecture**: two FPGAs (Digilent Nexys4 DDR) and two ESP32s (NodeMCU-32S) bridged wirelessly with ESP-NOW. Designed as a foundational build for future autonomous / agentic integrations.
 
 ## Architecture
 
 ```
-  [ Switches ]        [ Joystick ]                          [ Servo ]   [ L298N + Motors ]
-       |                   |                                    ^               ^
-       v                   v                                    |               |
- +--------------+   +--------------+   ESP-NOW   +-----------+   |   +-----------+
- | Controller   |UART| Controller  | =========> |    Car    |---+   |    Car    |
- |   FPGA       |<==>|   ESP32     | <========= |   ESP32   |UART=>|   FPGA    |
- | (Dashboard)  |9600| (Net Hub)   | telemetry  | (Kinematic|9600  | (ECU)     |
- +--------------+   +--------------+            |   Brain)  |      +-----------+
-   7-seg display                                +-----------+
+  Switches + Paddles      2x Joystick + Button                 Steering Servo   L298N + Motors
+        │                        │                                    ▲                ▲
+        ▼                        ▼                                    │                │
+ ┌──────────────┐  UART   ┌──────────────┐   ESP-NOW    ┌───────────┐ │   ┌───────────┐
+ │ Controller   │◄═══════►│ Controller   │═════════════►│    Car    │─┘   │    Car    │
+ │   FPGA       │  9600   │   ESP32      │◄═════════════│   ESP32   │═══► │   FPGA    │
+ │ (Dashboard)  │         │ (Net Hub)    │  telemetry   │(Kinematics)│9600 │  (ECU)    │
+ └──────────────┘         └──────────────┘              └───────────┘     └───────────┘
+   7-seg speedo                                                    IR wheel encoder ┘
 ```
 
 | Node | Platform | Role |
 |------|----------|------|
-| **Controller FPGA** | Verilog @ 100 MHz | Command Dashboard — reads config switches, displays telemetry |
-| **Controller ESP32** | C++ / Arduino | Network Hub — joystick + config → ESP-NOW |
-| **Car ESP32** | C++ / Arduino | Kinematic Brain — Ackerman steering, servo, packetizes drive cmd |
-| **Car FPGA** | Verilog @ 100 MHz | Engine Control Unit — slew-limited 20 kHz PWM to L298N |
+| **Controller FPGA** | Verilog @ 100 MHz | Command Dashboard — paddle-shift gearbox, config switches, telemetry speedometer |
+| **Controller ESP32** | C++ / Arduino | Network Hub — joysticks + config → ESP-NOW; relays telemetry to the FPGA |
+| **Car ESP32** | C++ / Arduino | Kinematic Brain — steering math, servo, packetizes drive command, relays telemetry |
+| **Car FPGA** | Verilog @ 100 MHz | Engine Control Unit — slew-limited 20 kHz PWM to L298N, horn, IR speed encoder |
 
 ## Repository Layout
 
 ```
 rccar/
 ├── 1_Controller_Node/
-│   ├── Controller_ESP32/        # Arduino sketch (network hub)
+│   ├── Controller_ESP32/Controller_ESP32.ino
 │   └── Controller_FPGA/
-│       ├── src/                 # Verilog sources
-│       └── constraints/         # controller.xdc (Nexys4 DDR)
+│       ├── src/            top_controller, transmission_control, switch_debouncer,
+│       │                   uart_tx, uart_rx, telemetry_parser, seven_seg_mux
+│       └── constraints/    controller.xdc
 ├── 2_Car_Node/
-│   ├── Car_ESP32/               # Arduino sketch (kinematic brain)
+│   ├── Car_ESP32/Car_ESP32.ino
 │   └── Car_FPGA/
-│       ├── src/                 # Verilog sources
-│       └── constraints/         # car.xdc (Nexys4 DDR)
+│       ├── src/            top_car, uart_rx, car_fsm, slew_rate_limiter, pwm_generator,
+│       │                   speed_encoder, uart_tx, car_horn, seven_seg_car
+│       └── constraints/    car.xdc
 └── README.md
 ```
 
-## Protocols
+## Data Flow & Protocols
 
-- **Controller FPGA ↔ Controller ESP32** — UART 9600 8N1.
-  - Config out: sync `0xFC` + 1 config byte `[TopSpeed:2][Sensitivity:2][Throttling:2][Record:1][Play:1]`.
-  - Telemetry in: sync `0xCF` + `[speed][status]`.
-- **Controller ESP32 ↔ Car ESP32** — ESP-NOW (drive packet out, telemetry back).
-- **Car ESP32 → Car FPGA** — UART 9600 8N1: `[0xAA sync][speed][speed][direction/config]`.
+**Config byte** (built by the Controller FPGA, used everywhere):
+```
+bit:   7 6   5 4        3 2          1 0
+       0 0   throttling sensitivity  gear/top-speed
+```
 
-## FPGA Targets
+| Link | Medium | Frame |
+|------|--------|-------|
+| Controller FPGA → ESP32 | UART 9600 8N1 (1 ms inter-byte gap) | `[0xFC][config]` |
+| ESP32 → Controller FPGA | UART 9600 8N1 | `[0xCF][real_speed][status]` |
+| Controller ESP32 ↔ Car ESP32 | ESP-NOW, Wi-Fi **Channel 1** | `DrivePacket` out / `TelemetryPacket` back |
+| Car ESP32 → Car FPGA | UART 9600 8N1 | `[0xAA][speed][command][0x55]` |
+| Car FPGA → Car ESP32 | UART 9600 8N1 (every 100 ms) | `[0xCF][real_speed][status]` |
 
-Both FPGA designs target the **Digilent Nexys4 DDR** (Artix-7 `xc7a100tcsg324-1`), 100 MHz clock. Pin maps are in each node's `constraints/*.xdc`.
+```c
+struct DrivePacket     { int16_t x; int16_t y; uint8_t config; uint8_t horn; };   // packed
+struct TelemetryPacket { uint8_t real_speed; uint8_t status; };                   // packed
+// command byte to Car FPGA = [horn:3][direction:2][throttling:1:0]
+```
+
+## Feature Highlights
+
+- **Paddle-shift gearbox** (`transmission_control.v`): debounced up/down paddles drive a gear FSM → top-speed cap (50/75/100 %).
+- **Steering** (Car ESP32): joystick X mapped to a servo around an 85° trim, range limited by the sensitivity bits, with a calibrated center + deadzone (no at-rest jiggle).
+- **Throttle** (Car ESP32): joystick Y → 0–100 % duty + direction, calibrated center + deadzone.
+- **Acceleration curve** (`slew_rate_limiter.v`): throttling bits select how fast PWM ramps to target (instant / 2.5 / 5 / 10 ms per step).
+- **Motor drive** (`pwm_generator.v`): 20 kHz PWM to L298N `ENA/ENB`, direction on `IN1–IN4`.
+- **Horn** (`car_horn.v`): 2.4 kHz PWM beep, forced to 0 when idle (direct-drive, Pmod JC1).
+- **IR speedometer** (`speed_encoder.v`): 2-FF synchronizer + edge counter over a 100 ms window → live speed back to the Controller FPGA's 7-seg display.
+- **Car 7-seg** (`seven_seg_car.v`): live PWM duty on the rightmost 3 digits (e.g. `100`/` 90`/` 80`).
+
+## Pin Map (Nexys4 DDR, Artix-7 `xc7a100tcsg324-1`, 100 MHz on E3)
+
+**Controller FPGA** — rst SW0 (J15); sensitivity SW1–2; throttling SW3–4; paddles JA1/JA2; UART `rx_pin` JB1 (D14) / `tx_out` JB2 (F16); 7-seg on the standard display pins.
+
+**Car FPGA** — rst SW0 (J15); `rx_pin` JA4 (G17); L298N on JA1–3/7–9; `tx_pin` JB1 (D14); IR `sensor_pin` JB2 (F16, internal pull-up); horn JC1 (K1); 7-seg display; *temporary* bring-up LEDs LD0 (sensor) / LD1 (heartbeat).
+
+## ESP32 Calibration
+
+The joystick center values are board-specific — measure and set them, or the car will creep at rest:
+- Controller: `JOY_CENTER_VAL`, `HARDWARE_DEADZONE`.
+- Car: `JOY_X_CENTER` / `JOY_X_DEADZONE` (steering), `JOY_Y_CENTER` / `JOY_Y_DEADZONE` (throttle), `STEERING_CENTER` (servo trim).
 
 ## Build
 
-- **FPGA:** open the `*.xpr` in Vivado (or add the `src/` and `constraints/` files to a new project), then synthesize → implement → generate bitstream.
-- **ESP32:** open the `.ino` sketches in the Arduino IDE with the ESP32 board package; install `ESP32Servo`.
+- **FPGA:** open the `*.xpr` in Vivado (or add the `src/` + `constraints/` files to a new Nexys4 DDR project), then synthesize → implement → generate bitstream → program.
+- **ESP32:** open each `.ino` in the Arduino IDE with the ESP32 board package; install **ESP32Servo**. Set each board's peer MAC (`carAddress` / `controllerAddress`) to your physical boards.
+
+## Known bring-up notes
+
+- **Temporary debug hooks** remain in the Car FPGA (`led[1:0]` + heartbeat) for IR-encoder bring-up; remove once the sensor is verified.
+- The IR module's `DO` must actively toggle (tune its comparator pot) and **share ground** with the FPGA, or `real_speed` reads 0.
+- Power-cycling the Controller ESP32 can stall the link on marginal USB power (Wi-Fi inrush brownout) — use a solid supply / add a bulk cap.

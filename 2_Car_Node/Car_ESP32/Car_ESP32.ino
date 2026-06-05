@@ -7,10 +7,15 @@
 
 // --- 1. HARDWARE PINS & CALIBRATION ---
 const int SERVO_PIN       = 18;
-const int STEERING_CENTER = 85;   
+const int STEERING_CENTER = 95;   
 
 const int JOY_X_CENTER   = 2048;
-const int JOY_X_DEADZONE = 240; 
+const int JOY_X_DEADZONE = 150; // Aligned for refined response
+
+// Throttle (Y) calibration — measure your stick's raw resting value and set
+// JOY_Y_CENTER to it (yours rests high, ~2900, which is why duty showed ~42).
+const int JOY_Y_CENTER   = 2048;
+const int JOY_Y_DEADZONE = 150;
 
 const int UART2_RX_PIN = 16;      
 const int UART2_TX_PIN = 17;      
@@ -18,7 +23,6 @@ const int UART2_TX_PIN = 17;
 Servo steeringServo;
 
 // --- 2. NETWORK DATA STRUCTURES ---
-// ADDED __attribute__((packed)) to match the Controller exactly!
 typedef struct __attribute__((packed)) DrivePacket {
   int16_t x;
   int16_t y;
@@ -34,28 +38,20 @@ typedef struct __attribute__((packed)) TelemetryPacket {
 DrivePacket     drive_cmd;
 TelemetryPacket car_telem;
 
-// TARGET MAC ADDRESS: Your Controller ESP32
 uint8_t controllerAddress[] = {0x1C, 0xC3, 0xAB, 0xCE, 0x49, 0x40};
 esp_now_peer_info_t peerInfo;
 
-// --- THE DEFERRAL FLAG ---
 volatile bool new_drive_cmd = false;
 
 // =============================================================================
 //  LIGHTWEIGHT WI-FI CALLBACK 
 // =============================================================================
 void OnDataRecv(const esp_now_recv_info_t *esp_now_info, const uint8_t *incomingData, int len) {
-  // If the packet size is perfect, copy it and flag the main loop to process it!
   if (len == sizeof(DrivePacket)) {
     memcpy(&drive_cmd, incomingData, sizeof(drive_cmd));
     new_drive_cmd = true;
-  } 
-  // If the sizes don't match, scream about it on the Serial Monitor!
-  else {
-    Serial.print("CRITICAL WARNING: Packet Size Mismatch! Expected ");
-    Serial.print(sizeof(DrivePacket));
-    Serial.print(" bytes, but got ");
-    Serial.println(len);
+  } else {
+    Serial.println("WARNING: Size Mismatch!");
   }
 }
 
@@ -63,7 +59,7 @@ void OnDataRecv(const esp_now_recv_info_t *esp_now_info, const uint8_t *incoming
 //  SETUP
 // =============================================================================
 void setup() {
-  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); // Disable brownout loop
   Serial.begin(115200);
   Serial2.begin(9600, SERIAL_8N1, UART2_RX_PIN, UART2_TX_PIN);
 
@@ -88,38 +84,41 @@ void setup() {
   steeringServo.attach(SERVO_PIN);
   steeringServo.write(STEERING_CENTER);
 
-  Serial.println("CAR ONLINE. Waiting for commands on Channel 1...");
+  Serial.println("CAR READY. Isolation processing online.");
 }
 
 // =============================================================================
-//  MAIN LOOP: Handles all Heavy Math and Telemetry
+//  MAIN LOOP
 // =============================================================================
 enum TelemState : uint8_t { WAIT_SYNC = 0, WAIT_SPEED, WAIT_STATUS };
 
 void loop() {
   
-  // ---------------------------------------------------------------------------
-  // TASK 1: PROCESS NEW DRIVE COMMANDS (Only runs when Wi-Fi gets a valid packet)
-  // ---------------------------------------------------------------------------
   if (new_drive_cmd) {
-    new_drive_cmd = false; // Reset the flag
+    new_drive_cmd = false; 
 
-    // --- A. TOP-SPEED (GEAR) MATH ---
+    // --- A. THROTTLE CONVERSION ---
     uint8_t speed_mode = drive_cmd.config & 0b11;
     int max_pwm = 100;
     
-    // RESTORED to your original punchy braking numbers!
     if      (speed_mode == 1) max_pwm = 80; 
     else if (speed_mode == 2) max_pwm = 90;
     else if (speed_mode == 3) max_pwm = 100;
 
-    int y_norm = map(drive_cmd.y, 0, 4095, -max_pwm, max_pwm);
-    if (abs(y_norm) < 25) y_norm = 0;                  
+    // Map centered around 2048
+    // Throttle measured relative to the stick's ACTUAL resting value (not a
+    // hard-coded 2048), with a deadzone, so a released stick yields EXACTLY 0
+    // duty instead of leaking the resting offset (that was the phantom ~42).
+    int y_offset = (int)drive_cmd.y - JOY_Y_CENTER;
+    if (abs(y_offset) < JOY_Y_DEADZONE) y_offset = 0;
+
+    int y_norm = (y_offset * max_pwm) / 2048;
+    y_norm = constrain(y_norm, -max_pwm, max_pwm);
 
     uint8_t target_speed = (uint8_t) abs(y_norm);
-    uint8_t direction    = (y_norm >= 0) ? 1 : 0;      
+    uint8_t direction    = (y_norm >= 0) ? 1 : 0;
 
-    // --- B. STEERING SENSITIVITY MATH ---
+    // --- B. STEERING SENSITIVITY ---
     uint8_t sens_mode = (drive_cmd.config >> 2) & 0b11;
     int max_angle = 40;
     if      (sens_mode == 1) max_angle = 30;
@@ -135,14 +134,13 @@ void loop() {
     int servo_angle = STEERING_CENTER + angle_delta;
     servo_angle = constrain(servo_angle, 0, 180);
 
-    // --- THE JIGGLE PREVENTER ---
     static int last_servo_angle = -1;
     if (servo_angle != last_servo_angle) {
         steeringServo.write(servo_angle);
         last_servo_angle = servo_angle;
     }
 
-    // --- C. PACK & SEND DRIVE FRAME TO CAR FPGA ---
+    // --- C. TRANSMIT TO CAR FPGA ---
     uint8_t throttling_mode = (drive_cmd.config >> 4) & 0b11;
     uint8_t command_byte = (drive_cmd.horn << 3) | (direction << 2) | throttling_mode;
 
@@ -152,9 +150,7 @@ void loop() {
     Serial2.write(0x55);          
   }
 
-  // ---------------------------------------------------------------------------
-  // TASK 2: PARSE REVERSE TELEMETRY (FPGA -> ESP32)
-  // ---------------------------------------------------------------------------
+  // --- REVERSE TELEMETRY HANDLING ---
   static TelemState rx_state      = WAIT_SYNC;
   static uint8_t    pending_speed = 0;
   static uint32_t   sync_ms       = 0;
@@ -166,9 +162,6 @@ void loop() {
 
   while (Serial2.available() > 0) {
     uint8_t incoming = (uint8_t) Serial2.read();
-  // Temporarily print every raw byte coming from the FPGA to see if speed is changing
-  Serial.print("Raw FPGA Byte: "); Serial.println(incoming, HEX); 
-  // ... rest of state machine
     switch (rx_state) {
       case WAIT_SYNC:
         if (incoming == 0xCF) {            
@@ -176,19 +169,16 @@ void loop() {
           sync_ms  = millis();
         }
         break;
-
       case WAIT_SPEED:
         pending_speed = incoming;          
         rx_state = WAIT_STATUS;
         break;
-
       case WAIT_STATUS:
         car_telem.real_speed = pending_speed;
         car_telem.status     = incoming;
         esp_now_send(controllerAddress, (uint8_t *) &car_telem, sizeof(car_telem));
         rx_state = WAIT_SYNC;              
         break;
-
       default:
         rx_state = WAIT_SYNC;
         break;
