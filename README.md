@@ -5,16 +5,16 @@ A hardware–software co-design project implementing a **Drive-by-Wire**, **FR (
 ## Architecture
 
 ```
-   Switches + Paddles          2× Joysticks           Steering Servo            L298N + Motors
-          │                         │                           │                         │
-          ▼                         ▼                           ▼                         ▼
- ┌──────────────┐        ┌──────────────┐        ┌──────────────┐        ┌──────────────┐
- │  Controller  │  UART  │  Controller  │ ESP-NOW│     Car      │  UART  │     Car      │
- │     FPGA     │◄══════►│    ESP32     │◄══════►│    ESP32     │◄══════►│     FPGA     │
- │ (Dashboard)  │  9600  │  (Net Hub)   │  Ch.1  │ (Kinematics) │  9600  │    (ECU)     │
- └──────────────┘        └──────────────┘        └──────────────┘        └──────────────┘
-         │                                                                        │
-         └─ 7-seg speedometer                                      Horn (2.4 kHz) ──┘
+  Switches + Paddles          2× Joysticks              Steering Servo            L298N + Motors
+         │                           │                           │                           │
+         ▼                           ▼                           ▼                           ▼
+ ┌──────────────┐            ┌──────────────┐            ┌──────────────┐            ┌──────────────┐
+ │  Controller  │    UART    │  Controller  │  ESP-NOW   │     Car      │    UART    │     Car      │
+ │     FPGA     │  ◄══════►  │    ESP32     │  ◄══════►  │    ESP32     │  ◄══════►  │     FPGA     │
+ │ (Dashboard)  │    9600    │  (Net Hub)   │    Ch.1    │ (Kinematics) │    9600    │    (ECU)     │
+ └──────────────┘            └──────────────┘            └──────────────┘            └──────────────┘
+         │                                                                                │
+         └─ 7-seg speedometer                                          Horn (2.4 kHz) ──┘
 ```
 
 | Node | Platform | Role |
