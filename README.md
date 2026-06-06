@@ -14,7 +14,7 @@ A hardware–software co-design project implementing a **Drive-by-Wire**, **FR (
  │ (Dashboard)  │    9600    │  (Net Hub)   │    Ch.1    │ (Kinematics) │    9600    │    (ECU)     │
  └──────────────┘            └──────────────┘            └──────────────┘            └──────────────┘
          │                                                                                │
-         └─ 7-seg speedometer                                          Horn (2.4 kHz) ──┘
+         └─ 7-seg speedometer                                            Horn (2.4 kHz) ──┘
 ```
 
 | Node | Platform | Role |
