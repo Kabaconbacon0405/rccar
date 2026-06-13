@@ -3,10 +3,9 @@ module top_car (
     input wire rst,
     input wire rx_pin,       // From Car ESP32 (Pin 17)
     
-    // Telemetry Pins
+    // Telemetry Pin
     output wire tx_pin,      // To Car ESP32 (Pin 16)
-    input wire sensor_pin,   // From KeyesEye Sensor
-    
+
     // Motor Driver Pins
     output wire ena,
     output wire in1,
@@ -17,11 +16,6 @@ module top_car (
     
     // The Horn Pin (direct-drive speaker on Pmod JC Pin 1 / K1 — no transistor)
     output wire horn_pin,
-
-    // --- TEMP DEBUG: speed-encoder bring-up LEDs ---
-    // led[0] = live raw sensor level at F16 (flickers if signal reaches the pin)
-    // led[1] = ~1.5 Hz heartbeat: proves THIS bitstream is loaded & running
-    output wire [1:0] led,
 
     // 7-segment display: live PWM duty on the right 3 digits (e.g. 100/90/80)
     output wire [6:0] seg,
@@ -81,17 +75,7 @@ module top_car (
         .pwm_out(final_pwm)
     );
 
-    // --- 5. SPEED ENCODER (KeyesEye) ---
-    wire [7:0] real_speed;
-
-    speed_encoder my_encoder (
-        .clk(clk),
-        .rst(rst),
-        .sensor_pin(sensor_pin),
-        .real_speed(real_speed)
-    );
-
-    // --- 6. TELEMETRY TRANSMITTER (FPGA -> ESP32) ---
+    // --- 5. TELEMETRY TRANSMITTER (FPGA -> ESP32) ---
     reg tx_start;
     reg [7:0] tx_data;
     wire tx_busy;
@@ -108,7 +92,8 @@ module top_car (
         .tx_busy(tx_busy)
     );
 
-    // Telemetry State Machine: Send [0xCF, real_speed, status] ~10 times a second
+    // Telemetry State Machine: Send [0xCF, current_speed, status] ~10 times a second.
+    // (The IR speed sensor was removed, so we report the commanded PWM duty.)
     reg [23:0] telem_timer = 0;
     localparam TELEM_RATE = 10_000_000;  // 100ms window
     localparam INTER_BYTE_GAP = 100_000; // 1ms breather gap between bytes
@@ -149,7 +134,7 @@ module top_car (
 
                 3: begin // 1ms Gap
                     if (telem_timer >= INTER_BYTE_GAP) begin
-                        tx_data <= real_speed; // Byte 2: SPEED
+                        tx_data <= current_speed; // Byte 2: SPEED (commanded duty)
                         tx_state <= 4;
                     end else begin
                         telem_timer <= telem_timer + 1;
@@ -229,12 +214,5 @@ module top_car (
     assign in2 = ~direction;
     assign in3 = direction;
     assign in4 = ~direction;
-
-    // --- TEMP DEBUG: speed-encoder bring-up ---
-    reg [26:0] heartbeat = 0;
-    always @(posedge clk) heartbeat <= heartbeat + 1'b1;
-
-    assign led[0] = sensor_pin;       // raw input level at F16 (turn wheel slowly)
-    assign led[1] = heartbeat[25];    // ~1.5 Hz blink = this bitstream is alive
 
 endmodule

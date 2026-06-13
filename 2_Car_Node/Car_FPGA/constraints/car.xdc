@@ -26,14 +26,9 @@ set_property -dict { PACKAGE_PIN F18   IOSTANDARD LVCMOS33 } [get_ports { in4 }]
 ## Pmod Header JB (Telemetry Hub)
 # Top Row
 set_property -dict { PACKAGE_PIN D14   IOSTANDARD LVCMOS33 } [get_ports { tx_pin }];     # FPGA TX -> ESP32 RX
-set_property -dict { PACKAGE_PIN F16   IOSTANDARD LVCMOS33 PULLTYPE PULLUP } [get_ports { sensor_pin }]; # KeyesEye Sensor OUT (internal pull-up for open-collector DO)
 
 ## Pmod Header JC (Direct-Drive Speaker — Lab 7 method, no transistor)
 set_property -dict { PACKAGE_PIN K1    IOSTANDARD LVCMOS33 } [get_ports { horn_pin }];   # JC Pin 1 -> Speaker (+)
-
-## TEMP DEBUG: onboard LEDs for speed-encoder bring-up
-set_property -dict { PACKAGE_PIN H17   IOSTANDARD LVCMOS33 } [get_ports { led[0] }];     # LD0 = raw sensor level (F16)
-set_property -dict { PACKAGE_PIN K15   IOSTANDARD LVCMOS33 } [get_ports { led[1] }];     # LD1 = heartbeat
 
 ## 7-Segment Display — Cathodes seg[6:0] = {CG..CA}
 set_property -dict { PACKAGE_PIN T10   IOSTANDARD LVCMOS33 } [get_ports { seg[0] }];     # CA
