@@ -77,6 +77,9 @@ flowchart TD
     class SW,JOY,SEG1,SEG2,SERVO,MOTOR,HORN io;
     style CTRL fill:#e5e5ee,stroke:#777,color:#111;
     style CAR  fill:#ece5e5,stroke:#777,color:#111;
+    %% thicker, vivid arrows — blue = forward path, orange = reverse path
+    linkStyle 0,1,2,3,4,5,6,7,8,12 stroke:#0a84ff,stroke-width:3px;
+    linkStyle 9,10,11 stroke:#ff7a18,stroke-width:3px;
 ```
 
 ## Repository Layout
