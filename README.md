@@ -22,7 +22,60 @@ A hardware–software co-design project implementing a **Drive-by-Wire**, **FR (
 | **Controller FPGA** | Verilog @ 100 MHz | Command Dashboard — paddle-shift gearbox, config switches, telemetry speedometer |
 | **Controller ESP32** | C++ / Arduino | Network Hub — joysticks + config → ESP-NOW; relays telemetry to the FPGA |
 | **Car ESP32** | C++ / Arduino | Kinematic Brain — steering math, servo, packetizes drive command, relays telemetry |
-| **Car FPGA** | Verilog @ 100 MHz | Engine Control Unit — slew-limited 20 kHz PWM to L298N, horn, IR speed encoder |
+| **Car FPGA** | Verilog @ 100 MHz | Engine Control Unit — slew-limited 20 kHz PWM to L298N, horn, telemetry TX |
+
+### Data-flow Workflow
+
+Solid = forward path (drive command), dashed = reverse path (telemetry). Blue = FPGA, orange = ESP32.
+
+```mermaid
+flowchart TD
+    %% ---------- Inputs ----------
+    SW["面板開關 / 換檔撥片"]
+    JOY["雙搖桿 X/Y + 喇叭鈕"]
+
+    %% ---------- Controller Node ----------
+    subgraph CTRL["控制端 Controller Node"]
+        CFPGA["① 控制端 FPGA — 儀表板<br/>去彈跳 → 換檔FSM → 組 config byte"]
+        CESP["② 控制端 ESP32 — 網路中樞<br/>解析 0xFC → 讀搖桿(死區/去串擾) → DrivePacket"]
+        SEG1["七段顯示器<br/>顯示車速"]
+    end
+
+    %% ---------- Car Node ----------
+    subgraph CAR["車輛端 Car Node"]
+        VESP["③ 車輛端 ESP32 — 運動大腦<br/>轉向角(85°±靈敏度) / 油門+方向 → 寫伺服"]
+        VFPGA["④ 車輛端 FPGA — 引擎ECU<br/>car_fsm(頭尾驗證) → 迴轉率限速 → 20kHz PWM"]
+        SERVO["伺服機 — 轉向"]
+        MOTOR["L298N H橋 → 後輪馬達"]
+        HORN["car_horn 2.4kHz → 喇叭"]
+        SEG2["七段顯示器<br/>current_speed"]
+    end
+
+    %% ---------- Forward path (solid) ----------
+    SW --> CFPGA
+    JOY --> CESP
+    CFPGA -->|"UART 9600<br/>0xFC · config"| CESP
+    CESP -->|"ESP-NOW Ch.1<br/>DrivePacket"| VESP
+    VESP --> SERVO
+    VESP -->|"UART 9600<br/>0xAA·spd·cmd·0x55"| VFPGA
+    VFPGA --> MOTOR
+    VFPGA --> HORN
+    VFPGA --> SEG2
+
+    %% ---------- Reverse path (dashed) ----------
+    VFPGA -.->|"UART 9600<br/>0xCF · spd · status"| VESP
+    VESP -.->|"ESP-NOW<br/>TelemetryPacket"| CESP
+    CESP -.->|"UART 9600<br/>0xCF · spd · status"| CFPGA
+    CFPGA --> SEG1
+
+    %% ---------- Styling ----------
+    classDef fpga fill:#e8f0ff,stroke:#3366cc,stroke-width:2px;
+    classDef esp  fill:#fff2e0,stroke:#e67e22,stroke-width:2px;
+    classDef io   fill:#eeeeee,stroke:#888,stroke-width:1px;
+    class CFPGA,VFPGA fpga;
+    class CESP,VESP esp;
+    class SW,JOY,SEG1,SEG2,SERVO,MOTOR,HORN io;
+```
 
 ## Repository Layout
 
