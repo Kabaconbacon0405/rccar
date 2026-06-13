@@ -69,12 +69,14 @@ flowchart TD
     CFPGA --> SEG1
 
     %% ---------- Styling ----------
-    classDef fpga fill:#e8f0ff,stroke:#3366cc,stroke-width:2px;
-    classDef esp  fill:#fff2e0,stroke:#e67e22,stroke-width:2px;
-    classDef io   fill:#eeeeee,stroke:#888,stroke-width:1px;
+    classDef fpga fill:#cdddf7,stroke:#21407f,stroke-width:2px,color:#0b1838;
+    classDef esp  fill:#fadcad,stroke:#a85c12,stroke-width:2px,color:#36200a;
+    classDef io   fill:#d6d6d6,stroke:#555,stroke-width:1px,color:#141414;
     class CFPGA,VFPGA fpga;
     class CESP,VESP esp;
     class SW,JOY,SEG1,SEG2,SERVO,MOTOR,HORN io;
+    style CTRL fill:#e5e5ee,stroke:#777,color:#111;
+    style CAR  fill:#ece5e5,stroke:#777,color:#111;
 ```
 
 ## Repository Layout
